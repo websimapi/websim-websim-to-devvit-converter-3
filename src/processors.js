@@ -1,3 +1,7 @@
+import * as acorn from 'https://esm.sh/acorn@8.11.3';
+import { simple as walkSimple } from 'https://esm.sh/acorn-walk@8.3.2';
+import MagicString from 'https://esm.sh/magic-string@0.30.5';
+
 // Processing Logic (Dependencies, Imports, HTML Parsing)
 
 // Helper to sanitize filenames
@@ -38,7 +42,7 @@ export class DependencyManager {
                     downloadUrl = `https://esm.sh/${importSource}?target=es2020&bundle`;
                 }
             } catch (e) {
-                console.warn("Failed to resolve URL", importSource, referrerUrl);
+                console.warn("[Converter] Failed to resolve URL", importSource, referrerUrl);
                 return importSource;
             }
         } else {
@@ -73,9 +77,12 @@ export class DependencyManager {
         
         const localPath = `./vendor/${safeName}.js`;
 
+        console.log(`[Converter] Resolving Dependency: ${importSource} -> ${downloadUrl} -> ${localPath}`);
+
         // 4. Start Download & Recursion
         const processPromise = (async () => {
             try {
+                console.log(`[Converter] Downloading: ${downloadUrl}`);
                 const res = await fetch(downloadUrl);
                 if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
                 let code = await res.text();
@@ -94,16 +101,13 @@ export class DependencyManager {
                      return `./${parts[parts.length - 1]}`;
                 };
 
-                const regex = /(from\s*['"]|import\s*['"]|import\s*\(\s*['"])([^'"]+)(['"]\s*\)?)/g;
-                code = code.replace(regex, (match, prefix, src, suffix) => {
-                    // Skip non-imports or absolute/data URLs if resolve doesn't handle them
-                    if (src.startsWith('data:')) return match;
-                    return `${prefix}${rewritePath(src)}${suffix}`;
-                });
-
-                return `// Source: ${downloadUrl}\n${code}`;
+                // Use robust AST processing for vendor files too (they are minified/complex)
+                // We use the same processor but with a recursive resolver
+                const processed = processJsContentWithAst(code, rewritePath, `Vendor: ${safeName}`);
+                
+                return `// Source: ${downloadUrl}\n${processed.content}`;
             } catch (err) {
-                console.error("Vendor download error:", err);
+                console.error("[Converter] Vendor download error:", err);
                 return `/* Error downloading ${downloadUrl}: ${err.message} */`;
             }
         })();
@@ -138,40 +142,84 @@ export class DependencyManager {
     }
 }
 
+// AST-based processing for safety against minified code issues
+function processJsContentWithAst(js, resolveFn, debugName = 'script') {
+    let isModule = false;
+    let ast;
+
+    try {
+        ast = acorn.parse(js, { sourceType: 'module', ecmaVersion: 'latest', allowReturnOutsideFunction: true, allowHashBang: true });
+    } catch (e) {
+        console.warn(`[Converter] AST Parse failed for ${debugName}. Fallback to original content. Error:`, e.message);
+        // Fallback: If it fails to parse, we can't safely rewrite it. 
+        // We return original content. Note: If it has imports, they won't be rewritten, 
+        // likely leading to runtime errors, but better than corrupting code.
+        return { content: js, isModule: false }; 
+    }
+
+    const magic = new MagicString(js);
+
+    walkSimple(ast, {
+        ImportDeclaration(node) {
+            isModule = true;
+            if (node.source && node.source.value) {
+                const newPath = resolveFn(node.source.value);
+                if (newPath !== node.source.value) {
+                    magic.overwrite(node.source.start, node.source.end, JSON.stringify(newPath));
+                }
+            }
+        },
+        ExportNamedDeclaration(node) {
+            isModule = true;
+            if (node.source && node.source.value) {
+                const newPath = resolveFn(node.source.value);
+                if (newPath !== node.source.value) {
+                    magic.overwrite(node.source.start, node.source.end, JSON.stringify(newPath));
+                }
+            }
+        },
+        ExportAllDeclaration(node) {
+            isModule = true;
+            if (node.source && node.source.value) {
+                const newPath = resolveFn(node.source.value);
+                if (newPath !== node.source.value) {
+                    magic.overwrite(node.source.start, node.source.end, JSON.stringify(newPath));
+                }
+            }
+        },
+        ImportExpression(node) {
+            // dynamic import()
+            isModule = true; // Technically dynamic import works in scripts too, but implies modular intent
+            if (node.source && node.source.type === 'Literal') {
+                const newPath = resolveFn(node.source.value);
+                if (newPath !== node.source.value) {
+                    magic.overwrite(node.source.start, node.source.end, JSON.stringify(newPath));
+                }
+            }
+        },
+        MetaProperty(node) {
+            if (node.meta.name === 'import' && node.property.name === 'meta') {
+                isModule = true;
+            }
+        }
+    });
+
+    return { content: magic.toString(), isModule };
+}
+
 // Parse JS files to detect imports, download them, and rewrite paths
 export function processJsForImports(jsContent, depManager) {
   let js = uint8ToString(jsContent);
-  let isModule = false;
-
-  // Basic check for module syntax
-  if (/^\s*(import|export)\s/m.test(js) || /import\s*\(/.test(js)) {
-    isModule = true;
-  }
   
-  // Regex to match imports:
-  // 1. import ... from "..."
-  // 2. export ... from "..."
-  // 3. import("...")
-  
-  const replaceCallback = (match, prefix, source, suffix) => {
+  const resolveFn = (source) => {
       // If it looks like a remote URL or bare import, resolve it
       if (source.startsWith('http') || !source.match(/^\.?\.?\//)) {
-          const localPath = depManager.resolve(source);
-          return `${prefix}${localPath}${suffix}`;
+          return depManager.resolve(source);
       }
-      return match;
+      return source;
   };
 
-  // Replace 'from "..."'
-  js = js.replace(/(from\s*['"])([^'"]+)(['"])/g, replaceCallback);
-
-  // Replace 'import "..."' (side effect)
-  js = js.replace(/(import\s*['"])([^'"]+)(['"])/g, replaceCallback);
-
-  // Replace dynamic import('...')
-  js = js.replace(/(import\s*\(\s*['"])([^'"]+)(['"]\s*\))/g, replaceCallback);
-
-  return { content: js, isModule };
+  return processJsContentWithAst(js, resolveFn, 'user-script');
 }
 
 // Parse HTML to extract scripts and handle import maps
