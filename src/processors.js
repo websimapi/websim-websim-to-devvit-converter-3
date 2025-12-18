@@ -39,7 +39,8 @@ export class DependencyManager {
                      downloadUrl = new URL(importSource, origin).href;
                 } else {
                     // Bare import in vendor? Assume fresh fetch from esm.sh
-                    downloadUrl = `https://esm.sh/${importSource}?target=es2020&bundle`;
+                    // Use es2022 to avoid legacy polyfills that might use eval
+                    downloadUrl = `https://esm.sh/${importSource}?target=es2022&bundle`;
                 }
             } catch (e) {
                 console.warn("[Converter] Failed to resolve URL", importSource, referrerUrl);
@@ -54,7 +55,7 @@ export class DependencyManager {
                 downloadUrl = importSource;
             } else {
                 // Bare specifier
-                downloadUrl = `https://esm.sh/${importSource}?target=es2020&bundle`;
+                downloadUrl = `https://esm.sh/${importSource}?target=es2022&bundle`;
             }
         }
 

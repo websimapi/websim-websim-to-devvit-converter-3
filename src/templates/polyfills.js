@@ -48,6 +48,36 @@ export const simpleLoggerJs = `
     post('error', ['[Unhandled Promise Rejection]', e.reason ? (e.reason.message || e.reason) : 'Unknown']);
   });
 
+  // --- AudioContext Autoplay Fix ---
+  // Browsers block AudioContext autoplay. We hook into creation to resume on first interaction.
+  const _AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (_AudioContext) {
+      const contexts = new Set();
+      // Polyfill the constructor to track instances
+      const AudioContextPolyfill = class extends _AudioContext {
+          constructor(opts) {
+              super(opts);
+              contexts.add(this);
+          }
+      };
+      
+      window.AudioContext = AudioContextPolyfill;
+      window.webkitAudioContext = AudioContextPolyfill;
+
+      const resumeAll = () => {
+          contexts.forEach(ctx => {
+              if (ctx.state === 'suspended') {
+                  ctx.resume().catch(() => {});
+              }
+          });
+      };
+
+      // Listen for any interaction to unlock audio
+      ['click', 'touchstart', 'keydown', 'mousedown'].forEach(evt => 
+          window.addEventListener(evt, resumeAll, { once: true, capture: true })
+      );
+  }
+
   // Signal ready
   console.log('[WebSim Logger] Bridge initialized.');
 })();
