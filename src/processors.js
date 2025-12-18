@@ -39,8 +39,8 @@ export class DependencyManager {
                      downloadUrl = new URL(importSource, origin).href;
                 } else {
                     // Bare import in vendor? Assume fresh fetch from esm.sh
-                    // Use es2022 to avoid legacy polyfills that might use eval
-                    downloadUrl = `https://esm.sh/${importSource}?target=es2022&bundle`;
+                    // Use es2020 to ensure broad compatibility and reduced polyfill bloat
+                    downloadUrl = `https://esm.sh/${importSource}?target=es2020&bundle`;
                 }
             } catch (e) {
                 console.warn("[Converter] Failed to resolve URL", importSource, referrerUrl);
@@ -55,7 +55,7 @@ export class DependencyManager {
                 downloadUrl = importSource;
             } else {
                 // Bare specifier
-                downloadUrl = `https://esm.sh/${importSource}?target=es2022&bundle`;
+                downloadUrl = `https://esm.sh/${importSource}?target=es2020&bundle`;
             }
         }
 
@@ -87,6 +87,15 @@ export class DependencyManager {
                 const res = await fetch(downloadUrl);
                 if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
                 let code = await res.text();
+
+                // Sanitize vendor code to prevent CSP violations (eval, new Function)
+                // This strips common "get global" hacks in older bundles
+                code = code.replace(/\(0,\s*eval\)\s*\(\s*["']this["']\s*\)/g, 'window');
+                code = code.replace(/eval\s*\(\s*["']this["']\s*\)/g, 'window');
+                code = code.replace(/new\s+Function\s*\(\s*["']return\s+this["']\s*\)\s*\(\)/g, 'window');
+                
+                // Polyfill import.meta.url for environments that might choke on it or if bundling fails
+                code = code.replace(/import\.meta\.url/g, 'window.location.href');
 
                 // Use final URL for resolving relative imports (handling redirects)
                 const finalUrl = res.url;

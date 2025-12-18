@@ -50,32 +50,39 @@ export const simpleLoggerJs = `
 
   // --- AudioContext Autoplay Fix ---
   // Browsers block AudioContext autoplay. We hook into creation to resume on first interaction.
-  const _AudioContext = window.AudioContext || window.webkitAudioContext;
-  if (_AudioContext) {
-      const contexts = new Set();
-      // Polyfill the constructor to track instances
-      const AudioContextPolyfill = class extends _AudioContext {
-          constructor(opts) {
-              super(opts);
-              contexts.add(this);
-          }
-      };
-      
-      window.AudioContext = AudioContextPolyfill;
-      window.webkitAudioContext = AudioContextPolyfill;
-
-      const resumeAll = () => {
-          contexts.forEach(ctx => {
-              if (ctx.state === 'suspended') {
-                  ctx.resume().catch(() => {});
+  try {
+      const _AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (_AudioContext) {
+          const contexts = new Set();
+          // Polyfill the constructor to track instances
+          // We wrap in a try-catch to ensure we don't break the game if native inheritance fails
+          class AudioContextPolyfill extends _AudioContext {
+              constructor(opts) {
+                  super(opts);
+                  contexts.add(this);
               }
-          });
-      };
-
-      // Listen for any interaction to unlock audio
-      ['click', 'touchstart', 'keydown', 'mousedown'].forEach(evt => 
-          window.addEventListener(evt, resumeAll, { once: true, capture: true })
-      );
+          }
+          
+          window.AudioContext = AudioContextPolyfill;
+          window.webkitAudioContext = AudioContextPolyfill;
+    
+          const resumeAll = () => {
+              contexts.forEach(ctx => {
+                  try {
+                      if (ctx.state === 'suspended') {
+                          ctx.resume().catch(() => {});
+                      }
+                  } catch(e) {}
+              });
+          };
+    
+          // Listen for any interaction to unlock audio
+          ['click', 'touchstart', 'keydown', 'mousedown'].forEach(evt => 
+              window.addEventListener(evt, resumeAll, { once: true, capture: true })
+          );
+      }
+  } catch(e) {
+      console.warn('[WebSim] AudioContext polyfill failed', e);
   }
 
   // Signal ready
@@ -288,8 +295,11 @@ export const websimSocketPolyfill = `
     window.WebsimSocket = WebsimSocket;
     
     // Also polyfill 'party' object if used by older games
+    // Some games use party.room, others use party as the socket itself.
     if (!window.party) {
         window.party = new WebsimSocket();
+        // Alias for games that expect party.room to be the socket
+        window.party.room = window.party;
     }
 })();
 `;
