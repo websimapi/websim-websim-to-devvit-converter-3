@@ -89,11 +89,23 @@ export class DependencyManager {
                 let code = await res.text();
 
                 // Sanitize vendor code to prevent CSP violations (eval, new Function)
-                // This strips common "get global" hacks in older bundles
-                code = code.replace(/\(0,\s*eval\)\s*\(\s*["']this["']\s*\)/g, 'window');
-                code = code.replace(/eval\s*\(\s*["']this["']\s*\)/g, 'window');
-                code = code.replace(/new\s+Function\s*\(\s*["']return\s+this["']\s*\)\s*\(\)/g, 'window');
                 
+                // 1. "new Function('return this')()" pattern -> window
+                code = code.replace(/new\s+Function\s*\(\s*["']return\s+this["']\s*\)\s*\(\)/g, 'window');
+                code = code.replace(/new\s+Function\s*\(\s*["']return\s+this["']\s*\)/g, '(()=>window)');
+                
+                // 2. "(0, eval)('this')" pattern -> window
+                code = code.replace(/\(0,\s*eval\)\s*\(\s*["']this["']\s*\)/g, 'window');
+                
+                // 3. "eval('this')" pattern -> window
+                code = code.replace(/\beval\s*\(\s*["']this["']\s*\)/g, 'window');
+
+                // 4. "Function('return this')()" (without new) -> window
+                code = code.replace(/Function\s*\(\s*["']return\s+this["']\s*\)\s*\(\)/g, 'window');
+                
+                // 5. Replace other common unsafe-eval patterns in webpack/polyfill code
+                code = code.replace(/Function\("return this"\)\(\)/g, 'window');
+
                 // Polyfill import.meta.url for environments that might choke on it or if bundling fails
                 code = code.replace(/import\.meta\.url/g, 'window.location.href');
 

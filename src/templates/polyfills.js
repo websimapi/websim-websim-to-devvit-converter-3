@@ -112,184 +112,148 @@ export const websimSocketPolyfill = `
     };
     _presence[_clientId] = {};
 
-    class WebsimSocket {
-        constructor() {
-            this.clientId = _clientId;
-            // Reference the global objects so all instances share state (singleton-like behavior)
-            this.roomState = _roomState;
-            this.presence = _presence;
-            this.peers = _peers;
-            this.listeners = {};
-            this.connected = false;
-            
-            // Listen for messages from Parent (Devvit Host)
-            window.addEventListener('message', (e) => {
-                if (!e.data || e.data.type !== 'WEBSIM_SOCKET_EVT') return;
-                
-                const { type, payload, senderId } = e.data.payload || {};
-                
-                // If it's an echo from ourselves, ignore it to prevent loops
-                // (unless we want optimistic verification, but for games simpler is better)
-                if (senderId === this.clientId) return;
-
-                this._handleRemoteEvent(type, payload, senderId);
-            });
-        }
-
-        // --- Core API ---
-
-        async initialize() {
-            console.log('[WebSim Socket] Connecting...');
-            this.connected = true;
-            
-            // Announce join to others
-            this._sendInternal('join', { 
-                username: this.peers[this.clientId].username,
-                avatarUrl: this.peers[this.clientId].avatarUrl
-            });
-            
-            // Simulate initialization delay
-            return new Promise(resolve => setTimeout(resolve, 50));
-        }
-
-        // --- State Management ---
-
-        updatePresence(update) {
-            // 1. Local Apply
-            const current = this.presence[this.clientId] || {};
-            this.presence[this.clientId] = { ...current, ...update };
-            
-            // 2. Notify Local Listeners
-            this._emit('presence', this.presence);
-            
-            // 3. Broadcast
-            this._sendInternal('presence_update', update);
-        }
-
-        updateRoomState(update) {
-            // 1. Local Apply
-            Object.assign(this.roomState, update);
-            
-            // 2. Notify Local Listeners
-            this._emit('roomState', this.roomState);
-            
-            // 3. Broadcast
-            this._sendInternal('room_state_update', update);
-        }
+    function WebsimSocket() {
+        if (!(this instanceof WebsimSocket)) return new WebsimSocket();
         
-        requestPresenceUpdate(targetClientId, data) {
-             this._sendInternal('request_presence', { targetClientId, data });
-        }
-
-        // --- Event / Messaging ---
-
-        send(eventData) {
-            // eventData: { type: "foo", ... }
-            this._sendInternal('broadcast_event', eventData);
-        }
+        this.clientId = _clientId;
+        this.roomState = _roomState;
+        this.presence = _presence;
+        this.peers = _peers;
+        this.listeners = {};
+        this.connected = false;
         
-        // Old style emit
-        emit(event, data) {
-            this.send({ type: event, ...data });
-        }
+        // Listen for messages from Parent (Devvit Host)
+        window.addEventListener('message', (e) => {
+            if (!e.data || e.data.type !== 'WEBSIM_SOCKET_EVT') return;
+            
+            const { type, payload, senderId } = e.data.payload || {};
+            
+            if (senderId === this.clientId) return;
+
+            this._handleRemoteEvent(type, payload, senderId);
+        });
+    }
+
+    WebsimSocket.prototype.initialize = async function() {
+        console.log('[WebSim Socket] Connecting...');
+        this.connected = true;
         
-        onmessage(event) {
-            // Default handler, user overrides this
-            console.log('[WebSim Socket] Message received:', event);
-        }
-
-        // --- Subscriptions ---
-
-        subscribePresence(callback) {
-            return this._on('presence', callback);
-        }
-
-        subscribeRoomState(callback) {
-            return this._on('roomState', callback);
-        }
+        this._sendInternal('join', { 
+            username: this.peers[this.clientId].username,
+            avatarUrl: this.peers[this.clientId].avatarUrl
+        });
         
-        subscribePresenceUpdateRequests(callback) {
-            return this._on('presence_request', callback);
-        }
+        return new Promise(resolve => setTimeout(resolve, 50));
+    };
 
-        // --- Internal Helpers ---
+    WebsimSocket.prototype.updatePresence = function(update) {
+        const current = this.presence[this.clientId] || {};
+        this.presence[this.clientId] = { ...current, ...update };
+        this._emit('presence', this.presence);
+        this._sendInternal('presence_update', update);
+    };
 
-        _sendInternal(msgType, data) {
-            window.parent.postMessage({
-                type: 'WEBSIM_SOCKET_MSG',
-                payload: {
-                    type: msgType,
-                    payload: data,
-                    senderId: this.clientId
-                }
-            }, '*');
-        }
+    WebsimSocket.prototype.updateRoomState = function(update) {
+        Object.assign(this.roomState, update);
+        this._emit('roomState', this.roomState);
+        this._sendInternal('room_state_update', update);
+    };
+    
+    WebsimSocket.prototype.requestPresenceUpdate = function(targetClientId, data) {
+         this._sendInternal('request_presence', { targetClientId, data });
+    };
 
-        _handleRemoteEvent(type, data, senderId) {
-            // Ensure peer exists in our registry
-            if (!this.peers[senderId]) {
-                this.peers[senderId] = { 
-                    id: senderId, 
-                    username: 'User ' + senderId.substr(0,4),
-                    avatarUrl: ''
-                };
+    WebsimSocket.prototype.send = function(eventData) {
+        this._sendInternal('broadcast_event', eventData);
+    };
+    
+    WebsimSocket.prototype.emit = function(event, data) {
+        this.send({ type: event, ...data });
+    };
+    
+    WebsimSocket.prototype.onmessage = function(event) {
+        console.log('[WebSim Socket] Message received:', event);
+    };
+
+    WebsimSocket.prototype.subscribePresence = function(callback) {
+        return this._on('presence', callback);
+    };
+
+    WebsimSocket.prototype.subscribeRoomState = function(callback) {
+        return this._on('roomState', callback);
+    };
+    
+    WebsimSocket.prototype.subscribePresenceUpdateRequests = function(callback) {
+        return this._on('presence_request', callback);
+    };
+
+    WebsimSocket.prototype._sendInternal = function(msgType, data) {
+        window.parent.postMessage({
+            type: 'WEBSIM_SOCKET_MSG',
+            payload: {
+                type: msgType,
+                payload: data,
+                senderId: this.clientId
             }
+        }, '*');
+    };
 
-            switch(type) {
-                case 'join':
-                    this.peers[senderId] = { ...this.peers[senderId], ...data };
-                    // Send our presence back so they know about us immediately (naive mesh sync)
-                    this._sendInternal('presence_update', this.presence[this.clientId] || {});
-                    break;
-                    
-                case 'presence_update':
-                    this.presence[senderId] = { ...(this.presence[senderId] || {}), ...data };
-                    this._emit('presence', this.presence);
-                    break;
-                    
-                case 'room_state_update':
-                    Object.assign(this.roomState, data);
-                    this._emit('roomState', this.roomState);
-                    break;
-                    
-                case 'broadcast_event':
-                    // Map to onmessage
-                    if (this.onmessage) {
-                        // Construct an event object similar to WebSim
-                        this.onmessage({ 
-                            data: { 
-                                ...data, 
-                                clientId: senderId, 
-                                username: this.peers[senderId].username 
-                            } 
-                        });
-                    }
-                    break;
-                
-                case 'request_presence':
-                    if (data.targetClientId === this.clientId) {
-                        this._emit('presence_request', data.data, senderId);
-                    }
-                    break;
-            }
-        }
-
-        _on(event, cb) {
-            if (!this.listeners[event]) this.listeners[event] = [];
-            this.listeners[event].push(cb);
-            return () => {
-                this.listeners[event] = this.listeners[event].filter(x => x !== cb);
+    WebsimSocket.prototype._handleRemoteEvent = function(type, data, senderId) {
+        if (!this.peers[senderId]) {
+            this.peers[senderId] = { 
+                id: senderId, 
+                username: 'User ' + senderId.substr(0,4),
+                avatarUrl: ''
             };
         }
 
-        _emit(event, ...args) {
-            if (this.listeners[event]) {
-                this.listeners[event].forEach(cb => {
-                    try { cb(...args); } catch(e) { console.error(e); }
-                });
-            }
+        switch(type) {
+            case 'join':
+                this.peers[senderId] = { ...this.peers[senderId], ...data };
+                this._sendInternal('presence_update', this.presence[this.clientId] || {});
+                break;
+            case 'presence_update':
+                this.presence[senderId] = { ...(this.presence[senderId] || {}), ...data };
+                this._emit('presence', this.presence);
+                break;
+            case 'room_state_update':
+                Object.assign(this.roomState, data);
+                this._emit('roomState', this.roomState);
+                break;
+            case 'broadcast_event':
+                if (this.onmessage) {
+                    this.onmessage({ 
+                        data: { 
+                            ...data, 
+                            clientId: senderId, 
+                            username: this.peers[senderId].username 
+                        } 
+                    });
+                }
+                break;
+            case 'request_presence':
+                if (data.targetClientId === this.clientId) {
+                    this._emit('presence_request', data.data, senderId);
+                }
+                break;
         }
-    }
+    };
+
+    WebsimSocket.prototype._on = function(event, cb) {
+        if (!this.listeners[event]) this.listeners[event] = [];
+        this.listeners[event].push(cb);
+        return () => {
+            this.listeners[event] = this.listeners[event].filter(x => x !== cb);
+        };
+    };
+
+    WebsimSocket.prototype._emit = function(event, ...args) {
+        if (this.listeners[event]) {
+            this.listeners[event].forEach(cb => {
+                try { cb(...args); } catch(e) { console.error(e); }
+            });
+        }
+    };
 
     // Expose Global
     window.WebsimSocket = WebsimSocket;
